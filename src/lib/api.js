@@ -34,10 +34,28 @@ export const coachApi = {
   chat: async (message) => unwrapApi(await apiClient.post('/api/v1/ai/chat', { message })),
 };
 
+
 export const integrationApi = {
-  syncIntervals: async ({ oldest, newest, limit = 200 }) => unwrapApi(await apiClient.post(`/api/v1/integrations/intervals-icu/sync?${query({ oldest, newest, limit })}`)),
-  telegramLinkCode: async () => unwrapApi(await apiClient.post('/api/v1/integrations/telegram/link-code')),
+  intervalsStatus: async () =>
+    unwrapApi(await apiClient.get('/api/v1/integrations/intervals-icu/status')),
+
+  authorizeIntervals: async () =>
+    unwrapApi(await apiClient.get('/api/v1/integrations/intervals-icu/authorize-url')),
+
+  disconnectIntervals: async () =>
+    unwrapApi(await apiClient.delete('/api/v1/integrations/intervals-icu/disconnect')),
+
+  syncIntervals: async ({ oldest, newest, limit = 200 }) =>
+    unwrapApi(
+      await apiClient.post(
+        `/api/v1/integrations/intervals-icu/sync?${query({ oldest, newest, limit })}`,
+      ),
+    ),
+
+  telegramLinkCode: async () =>
+    unwrapApi(await apiClient.post('/api/v1/integrations/telegram/link-code')),
 };
+
 
 export function unwrapEntity(response) {
   return unwrapApi(response);

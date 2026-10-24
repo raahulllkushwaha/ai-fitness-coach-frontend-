@@ -1,30 +1,459 @@
-import { useState } from 'react';
-import { Activity, ArrowUpRight, CheckCircle2, Copy, Link2, RefreshCw, ShieldCheck } from 'lucide-react';
+
+import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  Activity,
+  ArrowUpRight,
+  CheckCircle2,
+  Copy,
+  Link2,
+  RefreshCw,
+  ShieldCheck,
+} from 'lucide-react';
 import { subDays, format } from 'date-fns';
 import { toast } from 'sonner';
 import { integrationApi } from '../lib/api.js';
 import { apiErrorMessage } from '../lib/apiClient.js';
 import { Button, GlassCard, Input, PageHeader } from '../components/ui.jsx';
 
-export default function IntegrationsPage() {
-  const [oldest, setOldest] = useState(format(subDays(new Date(), 30), 'yyyy-MM-dd'));
-  const [newest, setNewest] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [syncing, setSyncing] = useState(false); const [syncResult, setSyncResult] = useState(null); const [syncError, setSyncError] = useState('');
-  const [linking, setLinking] = useState(false); const [linkCode, setLinkCode] = useState(null);
-  const sync = async (event) => { event.preventDefault(); if (newest < oldest) { toast.error('End date must be on or after start date.'); return; } setSyncing(true); setSyncError(''); setSyncResult(null); try { const result = await integrationApi.syncIntervals({ oldest, newest, limit: 200 }); setSyncResult(result); toast.success('Intervals.icu sync completed.'); } catch (error) { const message = apiErrorMessage(error); setSyncError(message); toast.error(message); } finally { setSyncing(false); } };
-  const generateLinkCode = async () => { setLinking(true); setLinkCode(null); try { const result = await integrationApi.telegramLinkCode(); setLinkCode(result); toast.success('New Telegram link code generated.'); } catch (error) { toast.error(apiErrorMessage(error)); } finally { setLinking(false); } };
-  const copy = async (value) => { try { await navigator.clipboard.writeText(value); toast.success('Copied to clipboard.'); } catch { toast.error('Clipboard access failed. Please copy the code manually.'); } };
+function formatTimestamp(value) {
+  if (!value) return 'Never';
 
-  return <div className="page-stack">
-    <PageHeader eyebrow="CONNECTED ECOSYSTEM" title={<>Your data,<br className="desktop-break" /> together<span className="title-period">.</span></>} description="Manage activity sync and connect your coaching assistant." />
-    <div className="integration-grid">
-      <GlassCard className="integration-card"><div className="integration-card-heading"><div className="integration-logo intervals-logo"><Activity size={23} /></div><span className="connected-badge"><span className="status-dot" /> CONFIGURED</span></div><p className="eyebrow">ACTIVITY PLATFORM</p><h2>Intervals.icu</h2><p className="integration-description">Import activity summaries into your workout log. New imports flow through the existing Kafka analytics pipeline.</p><div className="integration-features"><span><CheckCircle2 size={15} /> Activity imports</span><span><CheckCircle2 size={15} /> Duplicate protection</span><span><CheckCircle2 size={15} /> Analytics processing</span></div><form className="sync-form" onSubmit={sync}><div className="form-grid-two"><Input label="From" type="date" value={oldest} onChange={(event) => setOldest(event.target.value)} required /><Input label="To" type="date" value={newest} onChange={(event) => setNewest(event.target.value)} required /></div><Button type="submit" block loading={syncing}><RefreshCw size={16} /> Sync activities</Button></form>{syncError && <p className="field-error integration-error">{syncError}</p>}{syncResult && <div className="sync-result"><strong>Sync complete</strong><div className="sync-result-grid"><span>Fetched <b>{syncResult.fetchedActivities ?? 0}</b></span><span>Imported <b>{syncResult.importedWorkouts ?? 0}</b></span><span>Duplicates <b>{syncResult.skippedDuplicates ?? 0}</b></span><span>Skipped <b>{syncResult.skippedInvalidActivities ?? 0}</b></span></div></div>}<p className="integration-footnote"><ShieldCheck size={14} /> The current backend uses the configured owner’s personal API key. Per-user OAuth is needed before offering this connection to other accounts.</p></GlassCard>
-      <GlassCard className="integration-card telegram-integration-card"><div className="integration-card-heading"><div className="integration-logo telegram-logo"><SendIcon /></div><span className="connected-badge"><span className="status-dot" /> BOT AVAILABLE</span></div><p className="eyebrow">CHAT ASSISTANT</p><h2>Telegram</h2><p className="integration-description">Link your Telegram identity to this account so private bot messages use your own workout data.</p><div className="telegram-preview"><div className="telegram-preview-icon"><Activity size={19} /></div><div><strong>AI Fitness Coach</strong><small>Commands · summaries · AI chat</small></div><span className="telegram-wave">•••</span></div><div className="integration-features"><span><CheckCircle2 size={15} /> Private account link</span><span><CheckCircle2 size={15} /> One-time code</span><span><CheckCircle2 size={15} /> 5-minute expiry</span></div><Button block variant="outline" loading={linking} onClick={generateLinkCode}><Link2 size={16} /> Generate link code</Button>{linkCode && <div className="link-code-panel"><div className="link-code-head"><span>YOUR ONE-TIME CODE</span><span className="code-expiry">Expires in {linkCode.expiresInSeconds ?? 300}s</span></div><div className="code-display"><code>{linkCode.code}</code><button className="icon-button" onClick={() => copy(linkCode.code)} title="Copy code" aria-label="Copy link code"><Copy size={17} /></button></div><p>Open your bot in Telegram and send:</p><button className="copy-command" onClick={() => copy(linkCode.telegramCommand || `/link ${linkCode.code}`)}>{linkCode.telegramCommand || `/link ${linkCode.code}`} <Copy size={13} /></button><small>Keep the code private. Anyone using it before expiry could link the account.</small></div>}<p className="integration-footnote"><ShieldCheck size={14} /> The link code is temporary and should not be committed, logged or shared publicly.</p></GlassCard>
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString();
+}
+
+export default function IntegrationsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const oauthOutcome = searchParams.get('intervals');
+
+  const [oldest, setOldest] = useState(
+    format(subDays(new Date(), 30), 'yyyy-MM-dd'),
+  );
+  const [newest, setNewest] = useState(format(new Date(), 'yyyy-MM-dd'));
+
+  const [connectionStatus, setConnectionStatus] = useState(null);
+  const [checkingConnection, setCheckingConnection] = useState(true);
+  const [statusError, setStatusError] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncError, setSyncError] = useState('');
+
+  const [linking, setLinking] = useState(false);
+  const [linkCode, setLinkCode] = useState(null);
+
+  const [disconnectWarning, setDisconnectWarning] = useState('');
+
+  const refreshStatus = useCallback(async () => {
+    setCheckingConnection(true);
+    setStatusError('');
+
+    try {
+      const result = await integrationApi.intervalsStatus();
+      setConnectionStatus(result);
+    } catch (error) {
+      setConnectionStatus(null);
+      setStatusError(apiErrorMessage(error));
+    } finally {
+      setCheckingConnection(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshStatus();
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    if (!oauthOutcome) return;
+
+    if (oauthOutcome === 'connected') {
+      toast.success('Intervals.icu account connected.');
+    } else if (oauthOutcome === 'denied') {
+      toast.error('Intervals.icu authorization was cancelled or denied.');
+    } else {
+      toast.error(
+        'Could not complete Intervals.icu authorization. Please try again.',
+      );
+    }
+
+    setSearchParams((params) => {
+      const next = new URLSearchParams(params);
+      next.delete('intervals');
+      return next;
+    }, { replace: true });
+  }, [oauthOutcome, setSearchParams]);
+
+  const connectIntervals = async () => {
+    setConnecting(true);
+
+    try {
+      const result = await integrationApi.authorizeIntervals();
+
+      if (!result?.authorizationUrl) {
+        throw new Error('The backend did not return an authorization URL.');
+      }
+
+      window.location.assign(result.authorizationUrl);
+    } catch (error) {
+      toast.error(apiErrorMessage(error, error?.message));
+      setConnecting(false);
+    }
+  };
+
+  const disconnectIntervals = async () => {
+    const confirmed = window.confirm(
+      'Disconnect your Intervals.icu account? Previously imported workouts will remain in AI Fitness Coach.',
+    );
+
+    if (!confirmed) return;
+
+    setDisconnecting(true);
+    setDisconnectWarning('');
+
+    try {
+      const result = await integrationApi.disconnectIntervals();
+
+      setConnectionStatus({ connected: false });
+      setSyncResult(null);
+
+      if (result?.remoteRevocationConfirmed) {
+        toast.success('Intervals.icu disconnected successfully.');
+      } else {
+        setDisconnectWarning(
+          result?.message
+          || 'Disconnected locally. Check Intervals.icu settings to confirm remote access revocation.',
+        );
+      }
+    } catch (error) {
+      toast.error(apiErrorMessage(error));
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  const sync = async (event) => {
+    event.preventDefault();
+
+    if (!connectionStatus?.connected) {
+      toast.error('Connect your Intervals.icu account before syncing.');
+      return;
+    }
+
+    if (newest < oldest) {
+      toast.error('End date must be on or after start date.');
+      return;
+    }
+
+    setSyncing(true);
+    setSyncError('');
+    setSyncResult(null);
+
+    try {
+      const result = await integrationApi.syncIntervals({
+        oldest,
+        newest,
+        limit: 200,
+      });
+
+      setSyncResult(result);
+      toast.success('Intervals.icu sync completed.');
+      await refreshStatus();
+    } catch (error) {
+      const message = apiErrorMessage(error);
+      setSyncError(message);
+      toast.error(message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const generateLinkCode = async () => {
+    setLinking(true);
+    setLinkCode(null);
+
+    try {
+      const result = await integrationApi.telegramLinkCode();
+      setLinkCode(result);
+      toast.success('New Telegram link code generated.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error));
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  const copy = async (value) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success('Copied to clipboard.');
+    } catch {
+      toast.error('Clipboard access failed. Please copy the code manually.');
+    }
+  };
+
+  const connected = connectionStatus?.connected === true;
+
+  const statusLabel = checkingConnection
+    ? 'CHECKING'
+    : statusError
+      ? 'UNAVAILABLE'
+      : connected
+        ? 'CONNECTED'
+        : 'NOT CONNECTED';
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="CONNECTED ECOSYSTEM"
+        title={<>Your data,<br className="desktop-break" /> together<span className="title-period">.</span></>}
+        description="Manage activity sync and connect your coaching assistant."
+      />
+
+      <div className="integration-grid">
+        <GlassCard className="integration-card">
+          <div className="integration-card-heading">
+            <div className="integration-logo intervals-logo">
+              <Activity size={23} />
+            </div>
+            <span className="connected-badge">
+              <span className="status-dot" /> {statusLabel}
+            </span>
+          </div>
+
+          <p className="eyebrow">ACTIVITY PLATFORM</p>
+          <h2>Intervals.icu</h2>
+          <p className="integration-description">
+            Import your authorized training activities into your personal
+            workout log, with duplicate protection and analytics processing.
+          </p>
+
+          <div className="integration-features">
+            <span><CheckCircle2 size={15} /> Activity imports</span>
+            <span><CheckCircle2 size={15} /> Duplicate protection</span>
+            <span><CheckCircle2 size={15} /> Per-user authorization</span>
+          </div>
+
+          {checkingConnection && (
+            <p className="integration-footnote">
+              Checking your Intervals.icu connection...
+            </p>
+          )}
+
+          {!checkingConnection && statusError && (
+            <div>
+              <p className="field-error integration-error">{statusError}</p>
+              <Button block variant="outline" onClick={refreshStatus}>
+                <RefreshCw size={16} /> Retry connection status
+              </Button>
+            </div>
+          )}
+
+          {!checkingConnection && !statusError && !connected && (
+            <div className="sync-form">
+              <p className="integration-footnote">
+                Connect your own Intervals.icu account. You will be redirected
+                to Intervals.icu to review and authorize activity access.
+              </p>
+              <Button block loading={connecting} onClick={connectIntervals}>
+                <Link2 size={16} /> Connect Intervals.icu
+              </Button>
+            </div>
+          )}
+
+          {!checkingConnection && !statusError && connected && (
+            <>
+              <div className="sync-result">
+                <strong>Intervals.icu account connected</strong>
+                <p>
+                  Athlete ID: <b>{connectionStatus.athleteId || 'Available through authorization'}</b>
+                </p>
+                <p>
+                  Permissions: <b>{connectionStatus.scopes || 'Authorized'}</b>
+                </p>
+                <p>
+                  Last successful sync: <b>{formatTimestamp(connectionStatus.lastSyncAt)}</b>
+                </p>
+              </div>
+
+              <form className="sync-form" onSubmit={sync}>
+                <div className="form-grid-two">
+                  <Input
+                    label="From"
+                    type="date"
+                    value={oldest}
+                    onChange={(event) => setOldest(event.target.value)}
+                    required
+                  />
+                  <Input
+                    label="To"
+                    type="date"
+                    value={newest}
+                    onChange={(event) => setNewest(event.target.value)}
+                    required
+                  />
+                </div>
+
+                <Button type="submit" block loading={syncing}>
+                  <RefreshCw size={16} /> Sync activities
+                </Button>
+              </form>
+
+              {syncError && (
+                <p className="field-error integration-error">{syncError}</p>
+              )}
+
+              {syncResult && (
+                <div className="sync-result">
+                  <strong>Sync complete</strong>
+                  <div className="sync-result-grid">
+                    <span>Fetched <b>{syncResult.fetchedActivities ?? 0}</b></span>
+                    <span>Imported <b>{syncResult.importedWorkouts ?? 0}</b></span>
+                    <span>Duplicates <b>{syncResult.skippedDuplicates ?? 0}</b></span>
+                    <span>Skipped <b>{syncResult.skippedInvalidActivities ?? 0}</b></span>
+                  </div>
+                </div>
+              )}
+
+              <Button
+                block
+                variant="outline"
+                loading={disconnecting}
+                onClick={disconnectIntervals}
+              >
+                <ShieldCheck size={16} /> Disconnect Intervals.icu
+              </Button>
+            </>
+          )}
+
+          {disconnectWarning && (
+            <p className="field-error integration-error">
+              {disconnectWarning}
+            </p>
+          )}
+
+          <p className="integration-footnote">
+            <ShieldCheck size={14} />
+            OAuth tokens stay on the backend and are stored encrypted. Never
+            share or expose your client secret.
+          </p>
+        </GlassCard>
+
+        <GlassCard className="integration-card telegram-integration-card">
+          <div className="integration-card-heading">
+            <div className="integration-logo telegram-logo"><SendIcon /></div>
+            <span className="connected-badge">
+              <span className="status-dot" /> BOT AVAILABLE
+            </span>
+          </div>
+
+          <p className="eyebrow">CHAT ASSISTANT</p>
+          <h2>Telegram</h2>
+          <p className="integration-description">
+            Link your Telegram identity to this account so private bot messages
+            use your own workout data.
+          </p>
+
+          <div className="telegram-preview">
+            <div className="telegram-preview-icon"><Activity size={19} /></div>
+            <div>
+              <strong>AI Fitness Coach</strong>
+              <small>Commands · summaries · AI chat</small>
+            </div>
+            <span className="telegram-wave">•••</span>
+          </div>
+
+          <div className="integration-features">
+            <span><CheckCircle2 size={15} /> Private account link</span>
+            <span><CheckCircle2 size={15} /> One-time code</span>
+            <span><CheckCircle2 size={15} /> 5-minute expiry</span>
+          </div>
+
+          <Button
+            block
+            variant="outline"
+            loading={linking}
+            onClick={generateLinkCode}
+          >
+            <Link2 size={16} /> Generate link code
+          </Button>
+
+          {linkCode && (
+            <div className="link-code-panel">
+              <div className="link-code-head">
+                <span>YOUR ONE-TIME CODE</span>
+                <span className="code-expiry">
+                  Expires in {linkCode.expiresInSeconds ?? 300}s
+                </span>
+              </div>
+              <div className="code-display">
+                <code>{linkCode.code}</code>
+                <button
+                  className="icon-button"
+                  onClick={() => copy(linkCode.code)}
+                  title="Copy code"
+                  aria-label="Copy link code"
+                >
+                  <Copy size={17} />
+                </button>
+              </div>
+              <p>Open your bot in Telegram and send:</p>
+              <button
+                className="copy-command"
+                onClick={() => copy(linkCode.telegramCommand || `/link ${linkCode.code}`)}
+              >
+                {linkCode.telegramCommand || `/link ${linkCode.code}`}
+                <Copy size={13} />
+              </button>
+              <small>
+                Keep the code private. Anyone using it before expiry could
+                link the account.
+              </small>
+            </div>
+          )}
+
+          <p className="integration-footnote">
+            <ShieldCheck size={14} />
+            The link code is temporary and should not be committed, logged or
+            shared publicly.
+          </p>
+        </GlassCard>
+      </div>
+
+      <GlassCard className="security-banner">
+        <span><ShieldCheck size={20} /></span>
+        <div>
+          <strong>Your integrations, your data</strong>
+          <p>
+            Never share API keys or bot tokens. Keep secrets in environment
+            variables and rotate them if exposed.
+          </p>
+        </div>
+        <ArrowUpRight size={17} />
+      </GlassCard>
     </div>
-    <GlassCard className="security-banner"><span><ShieldCheck size={20} /></span><div><strong>Your integrations, your data</strong><p>Never share API keys or bot tokens. Keep secrets in environment variables and rotate them if exposed.</p></div><ArrowUpRight size={17} /></GlassCard>
-  </div>;
+  );
 }
 
 function SendIcon() {
-  return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 3 3.8 10.2c-.9.4-.8 1.6.2 1.9l5.2 1.7 1.7 5.2c.3 1 1.5 1.1 1.9.2L21 3Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/><path d="m9.2 13.8 5.3-5.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>;
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M21 3 3.8 10.2c-.9.4-.8 1.6.2 1.9l5.2 1.7 1.7 5.2c.3 1 1.5 1.1 1.9.2L21 3Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="m9.2 13.8 5.3-5.3"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
 }
