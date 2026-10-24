@@ -9,6 +9,7 @@ import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import CoachPage from './pages/CoachPage.jsx';
 import IntegrationsPage from './pages/IntegrationsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage.jsx';
 
 function ProtectedRoute({ children }) {
   const token = useAuthStore((state) => state.token);
@@ -25,6 +26,7 @@ export default function App() {
     <>
       <SmoothScroll />
       <Routes>
+        <Route path="/privacy" element={<PrivacyPolicyPage />} />
         <Route path="/login" element={<GuestRoute><LoginPage /></GuestRoute>} />
         <Route path="/register" element={<GuestRoute><RegisterPage /></GuestRoute>} />
         <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
@@ -35,6 +37,7 @@ export default function App() {
           <Route path="coach" element={<CoachPage />} />
           <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="profile" element={<ProfilePage />} />
+          
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
