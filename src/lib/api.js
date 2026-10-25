@@ -52,6 +52,17 @@ export const integrationApi = {
       ),
     ),
 
+  plannedWorkouts: async ({ oldest, newest, limit = 50 }) =>
+  unwrapApi(
+    await apiClient.get(
+      `/api/v1/integrations/intervals-icu/planned-workouts?${query({
+        oldest,
+        newest,
+        limit,
+      })}`,
+    ),
+  ),
+
   telegramLinkCode: async () =>
     unwrapApi(await apiClient.post('/api/v1/integrations/telegram/link-code')),
 };
